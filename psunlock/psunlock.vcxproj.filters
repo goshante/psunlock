@@ -30,5 +30,6 @@
     <Image Include="..\..\..\..\Downloads\psunlock.ico">
       <Filter>Resources</Filter>
     </Image>
+    <Image Include="psunlock.ico" />
   </ItemGroup>
 </Project>

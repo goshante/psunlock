@@ -115,6 +115,17 @@ bool TryToKillPopup(DWORD pid)
     return NeedsUnlock;
 }
 
+void PSToForeground()
+{
+    HWND hwnd = FindMainWindow(GetProcessIdByName(L"Photoshop.exe"));
+    if (!IsWindow(hwnd))
+        return;
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+}
+
 void UnlockPhotoshop(DWORD pid)
 {
     HWND hwnd = FindMainWindow(pid);
@@ -181,6 +192,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hWnd, NULL);
             DestroyMenu(hMenu);
         }
+        if (lParam == WM_LBUTTONDBLCLK)
+            PSToForeground();
         break;
 
     case WM_COMMAND:
@@ -232,7 +245,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
             psFound = true;
         }
 
-        if (pid && GetTimeMS() - lastMonitored >= 500)
+        if (pid && GetTimeMS() - lastMonitored >= 525)
         {
             if (TryToKillPopup(pid))
                 UnlockPhotoshop(pid);
@@ -252,6 +265,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
             break;
     }
 
+    Shell_NotifyIcon(NIM_DELETE, &nid);
     CloseHandle(hUniqueMutex);
     return 0;
 }
