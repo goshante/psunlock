@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <chrono>
+#include <sys/stat.h>
 #include "resource.h"
 
 #define ID_TRAY_EXIT  1001
@@ -13,6 +14,20 @@
 static NOTIFYICONDATA nid = { 0 };
 static HMENU hMenu;
 static bool NeedsUnlock = false;
+
+bool FileExists(const std::string& path)
+{
+    struct stat buffer;
+    return stat(path.c_str(), &buffer) == 0;
+}
+
+bool RunExecutable(const std::wstring& path)
+{
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    return CreateProcessW(path.c_str(), NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)
+        && CloseHandle(pi.hProcess) && CloseHandle(pi.hThread);
+}
 
 struct Context_t
 {
@@ -117,9 +132,14 @@ bool TryToKillPopup(DWORD pid)
 
 void PSToForeground()
 {
-    HWND hwnd = FindMainWindow(GetProcessIdByName(L"Photoshop.exe"));
+    DWORD pid = GetProcessIdByName(L"Photoshop.exe");
+    if (!pid)
+        return;
+
+    HWND hwnd = FindMainWindow(pid);
     if (!IsWindow(hwnd))
         return;
+
     ShowWindow(hwnd, SW_RESTORE);
     SetForegroundWindow(hwnd);
     SetActiveWindow(hwnd);
@@ -221,6 +241,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     HANDLE hUniqueMutex = CreateMutex(NULL, FALSE, TEXT("Global\\PSUnlockUnique"));
     if (GetLastError() == ERROR_ALREADY_EXISTS) 
         return -1;
+
+    if (FileExists("Photoshop.exe"))
+        RunExecutable(L"Photoshop.exe");
     
     WNDCLASS wc = { 0 };
     wc.lpfnWndProc = WndProc;
