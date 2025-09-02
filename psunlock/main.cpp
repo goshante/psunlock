@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <chrono>
+#include <map>
 #include <sys/stat.h>
 #include "resource.h"
 
@@ -88,6 +89,26 @@ BOOL CALLBACK EnumTargetChild(HWND hwnd, LPARAM lParam)
     return TRUE;
 }
 
+BOOL CALLBACK UnlockChildren(HWND hwnd, LPARAM lParam)
+{
+    EnableWindow(hwnd, TRUE);
+    return TRUE;
+}
+
+BOOL CALLBACK EnumChildToFindDroverLord(HWND hwnd, LPARAM lParam)
+{
+    wchar_t className[256];
+    GetClassNameW(hwnd, className, 256);
+    std::wstring cname = className;
+    if (cname.find(L"DroverLord - Window Class") != std::wstring::npos)
+    {
+        EnumChildWindows(hwnd, UnlockChildren, 0);
+        EnableWindow(hwnd, TRUE);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 BOOL CALLBACK EnumChildToFindChrome(HWND hwnd, LPARAM lParam) 
 {
     wchar_t className[256];
@@ -123,6 +144,25 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     return TRUE;
 }
 
+BOOL CALLBACK EnumWindowsProcDROV(HWND hwnd, LPARAM lParam)
+{
+    DWORD pid;
+    wchar_t className[256];
+    GetClassNameW(hwnd, className, 256);
+    std::wstring cname = className;
+
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == *(DWORD*)lParam)
+    {
+        EnumChildWindows(hwnd, EnumChildToFindDroverLord, 0);
+        if (cname.find(L"DroverLord - Window Class") != std::wstring::npos)
+        {
+            EnableWindow(hwnd, TRUE);
+        }
+    }
+    return TRUE;
+}
+
 bool TryToKillPopup(DWORD pid)
 {
     NeedsUnlock = false;
@@ -130,9 +170,9 @@ bool TryToKillPopup(DWORD pid)
     return NeedsUnlock;
 }
 
-void PSToForeground()
+void AppToForeground(const std::wstring& appName)
 {
-    DWORD pid = GetProcessIdByName(L"Photoshop.exe");
+    DWORD pid = GetProcessIdByName(appName.c_str());
     if (!pid)
         return;
 
@@ -146,7 +186,13 @@ void PSToForeground()
     SetFocus(hwnd);
 }
 
-void UnlockPhotoshop(DWORD pid)
+//Why the fuck they call this shit like that lmao
+void UnlockDroverLord(DWORD pid)
+{
+    EnumWindows(EnumWindowsProcDROV, (LPARAM)&pid);
+}
+
+void UnlockApplication(DWORD pid, bool DroverLord)
 {
     HWND hwnd = FindMainWindow(pid);
     if (!IsWindow(hwnd))
@@ -156,6 +202,9 @@ void UnlockPhotoshop(DWORD pid)
     SetForegroundWindow(hwnd);
     SetActiveWindow(hwnd);
     SetFocus(hwnd);
+
+    if (DroverLord)
+        UnlockDroverLord(pid);
 }
 
 INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) 
@@ -187,7 +236,7 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) 
+    switch (msg)
     {
     case WM_CREATE:
         nid.cbSize = sizeof(nid);
@@ -196,12 +245,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = LoadIcon(GetModuleHandleA(NULL), MAKEINTRESOURCE(IDI_ICON1));
-        lstrcpy(nid.szTip, TEXT("PS Unlock (Waiting for Photoshop...)"));
+        lstrcpy(nid.szTip, TEXT("PS Unlock (Waiting for PS/Premiere/AE...)"));
         Shell_NotifyIcon(NIM_ADD, &nid);
         break;
 
     case WM_TRAYICON:
-        if (lParam == WM_RBUTTONUP) 
+        if (lParam == WM_RBUTTONUP)
         {
             POINT pt;
             GetCursorPos(&pt);
@@ -213,7 +262,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DestroyMenu(hMenu);
         }
         if (lParam == WM_LBUTTONDBLCLK)
-            PSToForeground();
+        {
+            AppToForeground(L"AfterFX.exe");
+            AppToForeground(L"Adobe Premiere Pro.exe");
+            AppToForeground(L"Photoshop.exe");
+        }
+            
+
         break;
 
     case WM_COMMAND:
@@ -236,16 +291,48 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
+bool UnlockChecksForApp(const std::wstring& app)
+{
+    DWORD pid = GetProcessIdByName(app.c_str());
+    static std::map<std::wstring, uint64_t> lastMonitored;
+    if (lastMonitored.empty())
+    {
+        lastMonitored.emplace(L"Photoshop.exe", 0);
+        lastMonitored.emplace(L"Adobe Premiere Pro.exe", 0);
+        lastMonitored.emplace(L"AfterFX.exe", 0);
+    }
+
+    if (!pid)
+        return false;
+
+    //Every 525ms check is there any blocking popups
+    //If detected - close them and unlock PS main window
+    if (GetTimeMS() - lastMonitored[app] >= 525)
+    {
+        if (TryToKillPopup(pid))
+            UnlockApplication(pid, app == L"Adobe Premiere Pro.exe");
+        lastMonitored[app] = GetTimeMS();
+    }
+
+    return true;
+}
+
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) 
 {
-    //Prevents running multiple instances of psunlock
-    HANDLE hUniqueMutex = CreateMutex(NULL, FALSE, TEXT("Global\\PSUnlockUnique"));
-    if (GetLastError() == ERROR_ALREADY_EXISTS) 
-        return -1;
-
     //Optional feature as PS launcher
     if (FileExists("Photoshop.exe"))
         RunExecutable(L"Photoshop.exe");
+
+    if (FileExists("Adobe Premiere Pro.exe"))
+        RunExecutable(L"Adobe Premiere Pro.exe");
+
+    if (FileExists("AfterFX.exe"))
+        RunExecutable(L"AfterFX.exe");
+
+    //Prevents running multiple instances of psunlock
+    HANDLE hUniqueMutex = CreateMutex(NULL, FALSE, TEXT("Global\\PSUnlockUnique"));
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+        return -1;
     
     WNDCLASS wc = { 0 };
     wc.lpfnWndProc = WndProc;
@@ -257,26 +344,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         0, 0, 0, 0, NULL, NULL, hInst, NULL);
 
     MSG msg;
-    uint64_t lastMonitored = GetTimeMS();
-    DWORD pid = 0;
     bool psFound = false;
+    bool psFounStatus = false;
     while (true)
     {
-        if (!psFound && pid)
+        psFound = UnlockChecksForApp(L"Photoshop.exe") | UnlockChecksForApp(L"Adobe Premiere Pro.exe") | UnlockChecksForApp(L"AfterFX.exe");
+        if (psFound && !psFounStatus)
         {
             lstrcpy(nid.szTip, TEXT("PS Unlock (Monitoring for popups...)"));
             nid.uFlags = NIF_TIP;
             Shell_NotifyIcon(NIM_MODIFY, &nid);
-            psFound = true;
-        }
-
-        //Every 525ms check is there any blocking popups
-        //If detected - close them and unlock PS main window
-        if (pid && GetTimeMS() - lastMonitored >= 525)
-        {
-            if (TryToKillPopup(pid))
-                UnlockPhotoshop(pid);
-            lastMonitored = GetTimeMS();
+            psFounStatus = true;
         }
 
         if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
@@ -287,8 +365,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
                 break;
         }
 
-        pid = GetProcessIdByName(L"Photoshop.exe");
-        if (psFound && !pid)
+        if (psFounStatus && !psFound)
             break;
     }
 
